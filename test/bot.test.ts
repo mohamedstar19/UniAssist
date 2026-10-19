@@ -162,6 +162,11 @@ describe("bot flows", () => {
     expect(texts().length).toBe(0); // the bot never talks in the group
   });
 
+  it("anyone can ask for their Telegram id", async () => {
+    await privateText(7777, "/myid");
+    expect(texts().at(-1)).toContain("7777");
+  });
+
   it("unregistered user with a typed invite code gets registered", async () => {
     await privateText(ADMIN, "/newbatch U | F | B | 2026");
     const batch = await db.batch.findFirstOrThrow();

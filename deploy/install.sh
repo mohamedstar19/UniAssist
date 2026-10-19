@@ -92,9 +92,10 @@ done
 
 ADMINS=$(env_get ADMIN_TELEGRAM_IDS)
 while [ -z "$ADMINS" ]; do
-  ask ADMINS "الـTelegram ID بتاعك (من @userinfobot)، ولو أكتر من أدمن افصل بفاصلة"
+  ask ADMINS "الـTelegram ID بتاعك (أرقام). مش عارفه؟ دوس Enter وكمّل، وبعدين ابعت /myid للبوت"
   ADMINS=$(echo "$ADMINS" | tr -d ' ')
-  if ! echo "$ADMINS" | grep -qE '^[0-9]+(,[0-9]+)*$'; then red "لازم أرقام بس."; ADMINS=""; [ -n "$HAS_TTY" ] || { red "مفيش terminal للأسئلة: حط القيمة في $DIR/.env وشغّل تاني"; exit 1; }; fi
+  [ -z "$ADMINS" ] && { yellow "تمام، هنكمل من غير أدمن دلوقتي."; break; }
+  if ! echo "$ADMINS" | grep -qE '^[0-9]+(,[0-9]+)*$'; then red "لازم أرقام بس."; ADMINS=""; [ -n "$HAS_TTY" ] || break; fi
 done
 env_set ADMIN_TELEGRAM_IDS "$ADMINS"
 
@@ -172,5 +173,9 @@ case "$PROFILES" in
     ;;
 esac
 echo
+if [ -z "$ADMINS" ]; then
+  yellow "⚠️ لسه مفيش أدمن: ابعت /myid للبوت https://t.me/$BOT_USER ، وبعدين شغّل:"
+  echo "   sudo $DIR/deploy/install.sh   (هيسألك عن الـID بس ويكمل)"
+fi
 echo "البوت شغال دلوقتي حتى قبل ما الدومين يشتغل (تيليجرام مش محتاج بورتات مفتوحة)."
 echo "الخطوة الجاية: افتح البوت وابعت /newbatch ← والباقي في الـREADME (قسم: تجهيز أول دفعة)."

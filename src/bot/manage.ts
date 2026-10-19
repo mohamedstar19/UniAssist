@@ -62,7 +62,7 @@ const ADMIN_HELP = `👑 <b>أوامر الأدمن</b>
 /newbatch الجامعة | الكلية | اسم الدفعة | السنة
 /groups: الجروبات اللي البوت شايفها ومش مربوطة
 /link رقم_الجروب | كود_الدعوة | batch أو section أو course
-/makerep كود_الدعوة | telegram_id
+/makerep كود_الدعوة | telegram_id   (المندوب يعرف الـID بتاعه بـ /myid)
 /flag كود_الدعوة | المفتاح | القيمة   (مثلاً solverEnabled | false)
 /stats: أرقام سريعة
 /wareset: فك ربط رقم واتساب وربط رقم جديد (QR)
@@ -89,6 +89,11 @@ export function registerManageHandlers(bot: Bot): void {
     await redis.del(`edit:${ctx.from.id}`);
     await ctx.replyWithChatAction("typing").catch(() => undefined);
     await ctx.reply(await applyRepCorrection(actor, eventId, ctx.message.text));
+  });
+
+  // Anyone (registered or not) can get their Telegram id: needed for ADMIN_TELEGRAM_IDS and /makerep.
+  priv.command("myid", async (ctx) => {
+    await ctx.reply(`الـTelegram ID بتاعك:\n<code>${ctx.from.id}</code>\n(دوس عليه علشان تنسخه)`, { parse_mode: "HTML" });
   });
 
   // "/fix <correction>" in reply to an event card
