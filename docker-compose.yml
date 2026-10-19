@@ -1,5 +1,8 @@
-# UniAssist production stack: one VPS (e.g. Hetzner CX22, 4 GB).
-#   docker compose up -d --build
+# UniAssist production stack on one Linux server.
+#   docker compose up -d --build                      → app + db + redis (web on APP_PORT, default 3100)
+#   COMPOSE_PROFILES=https   → also Caddy on ports 80/443 with automatic HTTPS for $DOMAIN
+#   COMPOSE_PROFILES=tunnel  → also Cloudflare Tunnel (no open ports / port forwarding needed)
+# deploy/install.sh sets this up for you.
 services:
   app:
     build: .
@@ -11,6 +14,9 @@ services:
       WHATSAPP_AUTH_DIR: /app/data/whatsapp-auth
       STORAGE_DIR: /app/data/files
       PORT: "3000"
+    ports:
+      # The web page; bound to all interfaces so a reverse proxy on the host (or the LAN) can reach it.
+      - "${APP_PORT:-3100}:3000"
     volumes:
       - appdata:/app/data
     depends_on:
@@ -52,6 +58,7 @@ services:
   # HTTPS for the public agenda page (automatic Let's Encrypt certificate).
   caddy:
     image: caddy:2-alpine
+    profiles: ["https"]
     restart: unless-stopped
     ports:
       - "80:80"
@@ -61,6 +68,17 @@ services:
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddydata:/data
+    depends_on:
+      - app
+
+  # Public access without opening ports on the router (domain must be on Cloudflare).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
       - app
 
