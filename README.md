@@ -33,7 +33,7 @@
 curl -fsSL https://raw.githubusercontent.com/mohamedstar19/uniassist/main/deploy/install.sh | sudo bash
 ```
 
-- الدومين مظبوط مسبقاً على **uni.darwish-tech.com** (تقدر تغيره من `/opt/uniassist/.env`).
+- الدومين مظبوط مسبقاً على **uniassist.darwish-tech.com** (تقدر تغيره من `/opt/uniassist/.env`).
 - البوت بيشتغل فوراً حتى من غير الدومين، لأن تيليجرام مش محتاج بورتات مفتوحة.
 - صفحة الويب على الشبكة الداخلية: `http://192.168.1.114:3100`. عشان تشتغل من بره على الدومين، السكربت بيختار لوحده:
   - **البورتات 80/443 فاضية:** بيشغّل Caddy بـHTTPS أوتوماتيك. المطلوب منك: A record لـ`uni` يشاور على الـIP العام بتاعك، وPort forwarding لـ80 و443 في الراوتر لـ192.168.1.114.

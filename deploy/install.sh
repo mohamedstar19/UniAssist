@@ -8,7 +8,7 @@ set -euo pipefail
 
 REPO_URL="${UNIASSIST_REPO:-https://github.com/mohamedstar19/uniassist.git}"
 DIR="${UNIASSIST_DIR:-/opt/uniassist}"
-DEFAULT_DOMAIN="${UNIASSIST_DOMAIN:-uni.darwish-tech.com}"
+DEFAULT_DOMAIN="${UNIASSIST_DOMAIN:-uniassist.darwish-tech.com}"
 
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
