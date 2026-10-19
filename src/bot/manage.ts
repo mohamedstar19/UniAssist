@@ -30,6 +30,24 @@ async function targetBatch(ctx: Context, code?: string) {
   return s ? db.batch.findUnique({ where: { id: s.batchId } }) : null;
 }
 
+/**
+ * Fields of a "a | b | c" command plus its batch. A rep works on their own batch;
+ * an admin who isn't a student of a batch starts the command with the invite code.
+ */
+async function batchAndFields(ctx: Context) {
+  const all = fields(ctx);
+  const s = await getStudent(ctx);
+  if (s && isRep(s)) return { batch: await db.batch.findUnique({ where: { id: s.batchId } }), rest: all };
+  if (isAdmin(ctx)) {
+    const byCode = all[0] ? await db.batch.findUnique({ where: { inviteCode: all[0].toUpperCase() } }) : null;
+    if (byCode) return { batch: byCode, rest: all.slice(1) };
+    if (s) return { batch: await db.batch.findUnique({ where: { id: s.batchId } }), rest: all };
+  }
+  return { batch: null, rest: all };
+}
+
+const ADMIN_CODE_HINT = "\n(كأدمن من غير دفعة: ابدأ بكود الدعوة، مثلاً /addcourse ABC123 | Networks)";
+
 const REP_HELP = `🛠️ <b>أوامر المندوب</b>
 /pending: الأحداث اللي مستنية تأكيدك
 /addcourse الاسم | الكود | اسم تاني، اسم تالت
@@ -88,9 +106,9 @@ export function registerManageHandlers(bot: Bot): void {
   priv.command("addcourse", async (ctx) => {
     const s = await repOrAdmin(ctx);
     if (s === undefined) return;
-    const [name, code, aliases] = fields(ctx);
-    const batch = await targetBatch(ctx);
-    if (!name || !batch) return ctx.reply("اكتبها كده: /addcourse Computer Networks | CS301 | نتوركس، networks، شبكات");
+    const { batch, rest } = await batchAndFields(ctx);
+    const [name, code, aliases] = rest;
+    if (!name || !batch) return ctx.reply("اكتبها كده: /addcourse Computer Networks | CS301 | نتوركس، networks، شبكات" + ADMIN_CODE_HINT);
     const course = await db.course.upsert({
       where: { batchId_name: { batchId: batch.id, name } },
       create: { batchId: batch.id, name, code: code || null, aliases: splitList(aliases) },
@@ -102,10 +120,10 @@ export function registerManageHandlers(bot: Bot): void {
   priv.command("instructor", async (ctx) => {
     const s = await repOrAdmin(ctx);
     if (s === undefined) return;
-    const [courseName, name, role, phone] = fields(ctx);
-    const batch = await targetBatch(ctx);
+    const { batch, rest } = await batchAndFields(ctx);
+    const [courseName, name, role, phone] = rest;
     const course = batch && courseName ? matchCourseByName(await batchCourses(batch.id), courseName) : null;
-    if (!course || !name) return ctx.reply("اكتبها كده: /instructor Networks | د. أحمد علي | doctor | 01012345678");
+    if (!course || !name) return ctx.reply("اكتبها كده: /instructor Networks | د. أحمد علي | doctor | 01012345678" + ADMIN_CODE_HINT);
     const r: InstructorRole = role?.toLowerCase() === "ta" ? "ta" : "doctor";
     await db.instructor.create({ data: { courseId: course.id, name, role: r, phoneHint: phone ? phone.replace(/\D/g, "") : null } });
     await ctx.reply(`✅ ${name} اتضاف لمادة ${course.name}. رسايله هتاخد أولوية لو حصل تعارض.`);
@@ -114,12 +132,12 @@ export function registerManageHandlers(bot: Bot): void {
   priv.command("lecture", async (ctx) => {
     const s = await repOrAdmin(ctx);
     if (s === undefined) return;
-    const [courseName, day, time] = fields(ctx);
-    const batch = await targetBatch(ctx);
+    const { batch, rest } = await batchAndFields(ctx);
+    const [courseName, day, time] = rest;
     const course = batch && courseName ? matchCourseByName(await batchCourses(batch.id), courseName) : null;
     const weekday = Number(day);
     if (!course || !(weekday >= 1 && weekday <= 7) || !/^\d{1,2}:\d{2}$/.test(time ?? "")) {
-      return ctx.reply("اكتبها كده: /lecture Networks | 3 | 10:30   (1=الاتنين، 2=التلات، … 6=السبت، 7=الحد)");
+      return ctx.reply("اكتبها كده: /lecture Networks | 3 | 10:30   (1=الاتنين، 2=التلات، … 6=السبت، 7=الحد)" + ADMIN_CODE_HINT);
     }
     await db.lectureSlot.create({ data: { batchId: batch!.id, courseId: course.id, weekday, startTime: time! } });
     await ctx.reply(`✅ محاضرة ${course.name} اتسجلت. كده "المحاضرة الجاية" هتتفهم صح.`);

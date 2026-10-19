@@ -7,6 +7,7 @@ export default defineConfig({
       REDIS_URL: process.env.TEST_REDIS_URL ?? "redis://localhost:6379/15",
       TELEGRAM_BOT_TOKEN: "123:test",
       ANTHROPIC_API_KEY: "test",
+      ADMIN_TELEGRAM_IDS: "1000",
       LOG_LEVEL: "silent",
     },
     fileParallelism: false,
