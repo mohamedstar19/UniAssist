@@ -299,8 +299,10 @@ model Correction {
   id        String   @id @default(cuid())
   eventId   String
   event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  studentId String
-  student   Student  @relation(fields: [studentId], references: [id])
+  studentId String?
+  student   Student? @relation(fields: [studentId], references: [id])
+  /// Set when an admin (who may not be a student) made the correction
+  adminTelegramId String?
   action    String
   before    Json?
   after     Json?

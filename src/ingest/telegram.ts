@@ -8,7 +8,9 @@ export function normalizeTelegram(ctx: Context): NormalizedMessage | null {
   const msg = ctx.message ?? ctx.editedMessage;
   const chat = ctx.chat;
   if (!msg || !chat || (chat.type !== "group" && chat.type !== "supergroup")) return null;
-  if (msg.from?.is_bot) return null;
+  // Anonymous group admins post "as the group" (sender_chat = the group itself): keep those.
+  const anonymousAdmin = msg.sender_chat?.id === chat.id;
+  if (msg.from?.is_bot && !anonymousAdmin) return null;
 
   const original = msg.text ?? msg.caption ?? "";
   // An edit is ingested as a new message that replies to the original, so it can update the event.
@@ -31,13 +33,13 @@ export function normalizeTelegram(ctx: Context): NormalizedMessage | null {
   }
   if (!text && media.length === 0) return null;
 
-  const from = msg.from;
+  const from = anonymousAdmin ? undefined : msg.from;
   return {
     source: "telegram",
     groupExternalId: String(chat.id),
     groupTitle: chat.title,
-    sender: from ? String(from.id) : "unknown",
-    senderName: from ? [from.first_name, from.last_name].filter(Boolean).join(" ") : undefined,
+    sender: from ? String(from.id) : anonymousAdmin ? `admin:${chat.id}` : "unknown",
+    senderName: from ? [from.first_name, from.last_name].filter(Boolean).join(" ") : anonymousAdmin ? `${msg.author_signature ?? "أدمن الجروب"}` : undefined,
     text,
     media,
     sentAt: new Date((edited ? (msg.edit_date ?? msg.date) : msg.date) * 1000),

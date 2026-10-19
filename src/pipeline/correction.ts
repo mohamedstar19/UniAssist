@@ -1,4 +1,3 @@
-import type { Student } from "@prisma/client";
 import { z } from "zod";
 import { config } from "../config.js";
 import { llmJson } from "../llm/client.js";
@@ -26,10 +25,17 @@ const CorrectionSchema = z.object({
  * The rep corrects an event in plain words ("ده مش كويز ده إعلان", "الميعاد الصح الخميس").
  * The correction is stored (for improving the prompts later) and applied.
  */
-export async function applyRepCorrection(rep: Student, eventId: string, text: string): Promise<string> {
-  const event = await db.event.findFirst({ where: { id: eventId, batchId: rep.batchId }, include: { course: true, batch: true } });
+/** Who corrects: a rep (limited to their batch) or an admin (any batch). */
+export interface CorrectionActor {
+  studentId: string | null;
+  batchId: string | null;
+  adminTelegramId?: string | null;
+}
+
+export async function applyRepCorrection(actor: CorrectionActor, eventId: string, text: string): Promise<string> {
+  const event = await db.event.findFirst({ where: { id: eventId, ...(actor.batchId ? { batchId: actor.batchId } : {}) }, include: { course: true, batch: true } });
   if (!event) return "مش لاقي الحدث ده.";
-  const courses = await db.course.findMany({ where: { batchId: rep.batchId } });
+  const courses = await db.course.findMany({ where: { batchId: event.batchId } });
   const tz = event.batch.timezone;
 
   const { data: c } = await llmJson({
@@ -50,14 +56,14 @@ export async function applyRepCorrection(rep: Student, eventId: string, text: st
   if (c.reject) {
     await applyPatch(eventId, { status: "rejected" });
     await scheduleEventReminders(eventId);
-    await saveCorrection(rep.id, eventId, "reject", before, { status: "rejected" });
+    await saveCorrection(actor, eventId, "reject", before, { status: "rejected" });
     if (wasLive) await announceEvent(eventId, "cancelled", "الخبر ده طلع غلط، اتشال من الأجندة.");
     return "🗑️ اتشال. مش هيتبعت للدفعة.";
   }
   if (c.cancel) {
     await applyPatch(eventId, { status: "cancelled" });
     await scheduleEventReminders(eventId);
-    await saveCorrection(rep.id, eventId, "cancel", before, { status: "cancelled" });
+    await saveCorrection(actor, eventId, "cancel", before, { status: "cancelled" });
     if (wasLive) await announceEvent(eventId, "cancelled", null);
     return "🚫 اتلغى وكل التنبيهات بتاعته اتشالت.";
   }
@@ -73,7 +79,7 @@ export async function applyRepCorrection(rep: Student, eventId: string, text: st
   }
 
   const changed = await applyPatch(eventId, patch);
-  if (changed.length) await saveCorrection(rep.id, eventId, "edit", before, patch);
+  if (changed.length) await saveCorrection(actor, eventId, "edit", before, patch);
 
   if (event.status === "pending") {
     // A correction on a pending event also confirms it.
@@ -91,6 +97,15 @@ export async function applyRepCorrection(rep: Student, eventId: string, text: st
   return `✅ اتعدل (${changed.join(", ")}).`;
 }
 
-async function saveCorrection(studentId: string, eventId: string, action: string, before: unknown, after: unknown): Promise<void> {
-  await db.correction.create({ data: { studentId, eventId, action, before: JSON.parse(JSON.stringify(before)), after: JSON.parse(JSON.stringify(after)) } });
+async function saveCorrection(actor: CorrectionActor, eventId: string, action: string, before: unknown, after: unknown): Promise<void> {
+  await db.correction.create({
+    data: {
+      studentId: actor.studentId,
+      adminTelegramId: actor.adminTelegramId ?? null,
+      eventId,
+      action,
+      before: JSON.parse(JSON.stringify(before)),
+      after: JSON.parse(JSON.stringify(after)),
+    },
+  });
 }

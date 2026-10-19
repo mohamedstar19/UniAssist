@@ -1,4 +1,7 @@
+import { LlmOutputError, LlmRefusalError } from "../llm/client.js";
 import { db } from "../lib/db.js";
+import { notifyReps } from "../notify/announce.js";
+import { esc } from "../notify/format.js";
 import { logger } from "../lib/logger.js";
 import { announceMaterial } from "../notify/material.js";
 import { classifyMessage } from "./classify.js";
@@ -13,6 +16,19 @@ import { shouldClassify } from "./prefilter.js";
  * files → cheap filter → classify (fast model) → extract (smart model) → apply to the agenda.
  */
 export async function processRawMessage(rawMessageId: string): Promise<void> {
+  try {
+    await processInner(rawMessageId);
+  } catch (err) {
+    if (!(err instanceof LlmOutputError || err instanceof LlmRefusalError)) throw err; // transient: let the queue retry
+    logger.warn({ err, rawMessageId }, "model could not process message");
+    const msg = await db.rawMessage.update({ where: { id: rawMessageId }, data: { processedAt: new Date() }, include: { group: true } });
+    if (msg.group.batchId && msg.text) {
+      await notifyReps(msg.group.batchId, `❓ مقدرتش أفهم الرسالة دي من الجروب. لو فيها ميعاد مهم، بلغ الدفعة بنفسك:\n<i>${esc(msg.text.slice(0, 800))}</i>`);
+    }
+  }
+}
+
+async function processInner(rawMessageId: string): Promise<void> {
   const msg = await db.rawMessage.findUnique({
     where: { id: rawMessageId },
     include: { group: { include: { batch: true } }, media: true, replyTo: { include: { createdEvents: true, media: true } } },

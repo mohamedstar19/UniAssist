@@ -9,7 +9,8 @@ import { esc, eventCard, repButtons } from "../notify/format.js";
 import { scheduleEventReminders } from "../notify/reminders.js";
 import { batchCourses, matchCourseByName } from "../pipeline/courses.js";
 import { applyPatch, confirmEvent, resolveProposedChange } from "../pipeline/events.js";
-import { argText, getStudent, isAdmin, isRep, newCode } from "./helpers.js";
+import { applyRepCorrection, type CorrectionActor } from "../pipeline/correction.js";
+import { argText, eventIdFromReply, getStudent, isAdmin, isRep, newCode } from "./helpers.js";
 
 /** "a | b | c" → ["a","b","c"] */
 function fields(ctx: Context): string[] {
@@ -67,8 +68,38 @@ const ADMIN_HELP = `👑 <b>أوامر الأدمن</b>
 /wareset: فك ربط رقم واتساب وربط رقم جديد (QR)
 وفي قناة الدفعة: /linkchannel كود_الدعوة`;
 
+/** The correction actor for the sender, or null when they are neither rep nor admin. */
+async function correctionActor(ctx: Context): Promise<CorrectionActor | null> {
+  const s = await getStudent(ctx);
+  if (isAdmin(ctx)) return { studentId: s?.id ?? null, batchId: null, adminTelegramId: String(ctx.from!.id) };
+  if (isRep(s)) return { studentId: s!.id, batchId: s!.batchId };
+  return null;
+}
+
 export function registerManageHandlers(bot: Bot): void {
   const priv = bot.chatType("private");
+
+  // Text after pressing ✏️ on an event card (runs before the student registration gate, so admins work too).
+  priv.on("message:text", async (ctx, next) => {
+    if (ctx.message.text.startsWith("/")) return next();
+    const eventId = await redis.get(`edit:${ctx.from.id}`);
+    if (!eventId) return next();
+    const actor = await correctionActor(ctx);
+    if (!actor) return next();
+    await redis.del(`edit:${ctx.from.id}`);
+    await ctx.replyWithChatAction("typing").catch(() => undefined);
+    await ctx.reply(await applyRepCorrection(actor, eventId, ctx.message.text));
+  });
+
+  // "/fix <correction>" in reply to an event card
+  priv.command("fix", async (ctx, next) => {
+    const actor = await correctionActor(ctx);
+    if (!actor) return next();
+    const eventId = eventIdFromReply(ctx);
+    if (!eventId) return ctx.reply("رد بـ/fix على كارت الحدث واكتب التصحيح، مثلاً: /fix ده إعلان مش كويز");
+    await ctx.replyWithChatAction("typing").catch(() => undefined);
+    await ctx.reply(await applyRepCorrection(actor, eventId, argText(ctx)));
+  });
 
   priv.command("rephelp", async (ctx) => {
     if (await repOrAdmin(ctx)) await ctx.reply(REP_HELP, { parse_mode: "HTML" });
@@ -161,7 +192,9 @@ export function registerManageHandlers(bot: Bot): void {
     } else if (action === "no") {
       await applyPatch(event.id, { status: "rejected" });
       await scheduleEventReminders(event.id);
-      if (s) await db.correction.create({ data: { eventId: event.id, studentId: s.id, action: "reject", before: { status: event.status }, after: { status: "rejected" } } });
+      await db.correction.create({
+        data: { eventId: event.id, studentId: s?.id ?? null, adminTelegramId: isAdmin(ctx) ? String(ctx.from.id) : null, action: "reject", before: { status: event.status }, after: { status: "rejected" } },
+      });
       await ctx.answerCallbackQuery({ text: "🗑️ اتشال" });
       await ctx.editMessageReplyMarkup().catch(() => undefined);
     } else {
@@ -174,7 +207,7 @@ export function registerManageHandlers(bot: Bot): void {
   bot.callbackQuery(/^chg:(ok|no):(\w+)$/, async (ctx) => {
     const s = await getStudent(ctx);
     if (!isAdmin(ctx) && !isRep(s)) return ctx.answerCallbackQuery({ text: "للمندوب بس" });
-    const msg = await resolveProposedChange(ctx.match[2]!, ctx.match[1] === "ok");
+    const msg = await resolveProposedChange(ctx.match[2]!, ctx.match[1] === "ok", isAdmin(ctx) ? null : s!.batchId);
     await ctx.answerCallbackQuery();
     await ctx.editMessageReplyMarkup().catch(() => undefined);
     await ctx.reply(msg);
@@ -208,8 +241,9 @@ export function registerManageHandlers(bot: Bot): void {
     await ctx.reply(`${lines.join("\n")}\n\nاربط بـ: /link رقم_الجروب | كود_الدعوة | batch`, { parse_mode: "HTML" });
   });
 
-  priv.command("link", async (ctx) => {
-    if (!isAdmin(ctx)) return;
+  priv.command("link", async (ctx, next) => {
+    // Without "|" arguments this is the students' /link (agenda link).
+    if (!isAdmin(ctx) || !ctx.match.includes("|")) return next();
     const [groupId, code, type] = fields(ctx);
     const batch = code ? await db.batch.findUnique({ where: { inviteCode: code.toUpperCase() } }) : null;
     const group = groupId ? await db.group.findUnique({ where: { id: groupId } }) : null;

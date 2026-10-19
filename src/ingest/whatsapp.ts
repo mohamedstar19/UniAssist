@@ -9,6 +9,7 @@ import makeWASocket, {
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
+  proto,
   type WAMessage,
   type WASocket,
 } from "baileys";
@@ -47,6 +48,8 @@ export async function resetWhatsApp(): Promise<void> {
 
 export async function startWhatsApp(): Promise<void> {
   const gen = ++generation;
+  let qrCount = 0;
+  let openedThisGen = false;
   await mkdir(config.WHATSAPP_AUTH_DIR, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(config.WHATSAPP_AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: undefined }));
@@ -69,12 +72,14 @@ export async function startWhatsApp(): Promise<void> {
     if (gen !== generation) return; // stale socket (replaced by a reset)
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      // Send the QR to the admins on Telegram so the number can be linked from anywhere.
+      // Send the QR to the admins on Telegram so the number can be linked from anywhere (a few times, not forever).
+      if (++qrCount > 3) return;
       const png = await QRCode.toBuffer(qr, { width: 512 });
       await alertAdminsPhoto(png, "📱 واتساب محتاج ربط: افتح واتساب على الرقم المخصص ← الأجهزة المرتبطة ← اربط جهاز، وامسح الكود ده.");
       logger.info("WhatsApp QR sent to admins");
     }
     if (connection === "open") {
+      openedThisGen = true;
       logger.info("WhatsApp connected");
       if (downAlertTimer) clearTimeout(downAlertTimer);
       downAlertTimer = null;
@@ -92,6 +97,11 @@ export async function startWhatsApp(): Promise<void> {
         );
         return;
       }
+      if (qrCount > 0 && !openedThisGen) {
+        // The QR codes expired without being scanned: wait for the admin instead of spamming new ones.
+        await alertAdmins("⌛ كود الـQR انتهى من غير ما يتمسح. لما تبقى جاهز ابعت /wareset ويوصلك كود جديد.");
+        return;
+      }
       logger.warn({ code }, "WhatsApp connection closed, reconnecting");
       // Short blips reconnect on their own; alert only if still down after a minute.
       if (!downAlertTimer && connectedOnce) {
@@ -106,8 +116,12 @@ export async function startWhatsApp(): Promise<void> {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+    // "append" = messages that arrived while we were offline (restart, reconnect). Duplicates are
+    // dropped by the unique (group, message id) constraint. Skip anything older than 3 days.
+    if (type !== "notify" && type !== "append") return;
+    const minTs = Date.now() / 1000 - 3 * 86400;
     for (const m of messages) {
+      if (Number(m.messageTimestamp ?? 0) < minTs) continue;
       try {
         const norm = await normalize(m);
         if (norm) await ingestMessage(norm);
@@ -143,7 +157,16 @@ async function normalize(m: WAMessage): Promise<NormalizedMessage | null> {
     if (!inner) break;
     content = inner;
   }
-  const type = getContentType(content);
+  let type = getContentType(content);
+  // An edited message: ingest the new text as a reply to the original, so the event gets updated.
+  let editOf: string | null = null;
+  if (type === "protocolMessage") {
+    const pm = content.protocolMessage;
+    if (pm?.type !== proto.Message.ProtocolMessage.Type.MESSAGE_EDIT || !pm.editedMessage || !pm.key?.id) return null;
+    editOf = pm.key.id;
+    content = pm.editedMessage;
+    type = getContentType(content);
+  }
   if (!type || type === "protocolMessage" || type === "reactionMessage") return null;
 
   let text = "";
@@ -178,8 +201,13 @@ async function normalize(m: WAMessage): Promise<NormalizedMessage | null> {
       return null; // stickers, audio, video, polls: ignored in the MVP
   }
 
+  if (editOf) {
+    media.length = 0; // files of the original were already stored
+    text = `(تعديل على رسالة سابقة) ${text}`;
+  }
+
   if (!groupTitles.has(jid)) await refreshGroups();
-  const sender = jidNormalizedUser(m.key.participant ?? m.participant ?? "");
+  const sender = await senderPhone(m);
 
   return {
     source: "whatsapp",
@@ -190,7 +218,24 @@ async function normalize(m: WAMessage): Promise<NormalizedMessage | null> {
     text,
     media,
     sentAt: new Date(Number(m.messageTimestamp ?? Date.now() / 1000) * 1000),
-    replyToExternalId: contextInfo?.stanzaId ?? undefined,
-    externalId: m.key.id ?? `${jid}-${m.messageTimestamp}`,
+    replyToExternalId: editOf ?? contextInfo?.stanzaId ?? undefined,
+    externalId: editOf ? `${editOf}:edit:${m.messageTimestamp}` : (m.key.id ?? `${jid}-${m.messageTimestamp}`),
   };
+}
+
+/**
+ * The sender's phone number. Newer groups address members by "LID" (a private id); the phone
+ * number is then in participantAlt or the LID→PN mapping. Instructors are matched by phone.
+ */
+async function senderPhone(m: WAMessage): Promise<string> {
+  const participant = m.key.participant ?? m.participant ?? "";
+  const alt = m.key.participantAlt ?? "";
+  let jid = participant;
+  if (alt.endsWith("@s.whatsapp.net")) jid = alt;
+  else if (participant.endsWith("@lid") && sock) {
+    const pn = await sock.signalRepository.lidMapping.getPNForLID(participant).catch(() => null);
+    if (pn) jid = pn;
+  }
+  const normalized = jidNormalizedUser(jid);
+  return normalized.split("@")[0]?.split(":")[0] ?? normalized;
 }

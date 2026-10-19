@@ -1,16 +1,14 @@
 import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { db } from "../lib/db.js";
-import { redis } from "../lib/redis.js";
 import { esc } from "../notify/format.js";
-import { applyRepCorrection } from "../pipeline/correction.js";
 import { batchCourses, matchCourseByName } from "../pipeline/courses.js";
 import { answerQuestion } from "../tutor/ask.js";
 import { answerQuiz, quizScore, startQuiz, type QuizState } from "../tutor/quiz.js";
 import { detectCourse, endConversation, followUp, hasConversation, runTutor, type StudentWithBatch, type TutorMode, type UploadedFile } from "../tutor/tutor.js";
-import { argText, eventIdFromReply, filesFromMessage, getStudent, isRep, sendAnswer, stashFiles, tutorKeyboard, unstashFiles, withTyping } from "./helpers.js";
+import { argText, eventIdFromReply, filesFromMessage, getStudent, sendAnswer, stashFiles, tutorKeyboard, unstashFiles, withTyping } from "./helpers.js";
 import { sendFiles } from "./student.js";
 
-const LETTERS = ["أ", "ب", "ج", "د", "هـ", "و"];
+const LETTERS = ["أ", "ب", "ج", "د", "هـ", "و"]; // quizzes are limited to 6 options (see quiz.ts)
 
 async function runAndReply(ctx: Context, s: StudentWithBatch, mode: TutorMode, opts: { eventId?: string | null; text?: string; files?: UploadedFile[]; courseId?: string | null }) {
   const result = await withTyping(ctx, () => runTutor({ student: s, mode, ...opts }));
@@ -90,16 +88,6 @@ export function registerStudyHandlers(bot: Bot): void {
       return;
     }
     await beginQuiz(ctx, s, { courseId: course.id, lectureNumber: lecture ? Number(lecture) : null });
-  });
-
-  // Rep: "/fix" in reply to an event card
-  priv.command("fix", async (ctx) => {
-    const s = (await getStudent(ctx))!;
-    if (!isRep(s)) return ctx.reply("الأمر ده للمندوب بس.");
-    const eventId = eventIdFromReply(ctx);
-    if (!eventId) return ctx.reply("رد بـ/fix على كارت الحدث واكتب التصحيح، مثلاً: /fix ده إعلان مش كويز");
-    const reply = await withTyping(ctx, () => applyRepCorrection(s, eventId, argText(ctx)));
-    await ctx.reply(reply);
   });
 
   // ---- Buttons ------------------------------------------------------------------------------
@@ -193,8 +181,14 @@ export function registerStudyHandlers(bot: Bot): void {
 
   // ---- Files sent without a command --------------------------------------------------------------
 
-  priv.on([":photo", ":document"], async (ctx) => {
+  priv.on(["message:photo", "message:document"], async (ctx) => {
     const s = (await getStudent(ctx))!;
+    // "/review" (or /explain, /hint, /solve) written in the caption of the file
+    const cap = ctx.message.caption?.match(/^\/(explain|hint|solve|review)(?:@\w+)?\s*([\s\S]*)$/);
+    if (cap) {
+      const files = await filesFromMessage(ctx);
+      return runAndReply(ctx, s, cap[1] as TutorMode, { files, text: cap[2]!.trim() });
+    }
     if (await hasConversation(s.id)) {
       const files = await filesFromMessage(ctx);
       const res = await withTyping(ctx, () => followUp(s, ctx.message.caption || "بص على الملف ده.", files));
@@ -217,13 +211,6 @@ export function registerStudyHandlers(bot: Bot): void {
     const s = (await getStudent(ctx))!;
     const text = ctx.message.text.trim();
     if (text.startsWith("/")) return ctx.reply("أمر مش معروف. ابعت /help");
-
-    // Rep editing an event after pressing ✏️
-    const editing = await redis.getdel(`edit:${s.telegramId}`);
-    if (editing && isRep(s)) {
-      const reply = await withTyping(ctx, () => applyRepCorrection(s, editing, text));
-      return ctx.reply(reply);
-    }
 
     // "ابعتلي سلايدات lecture 4 بتاعة Networks"
     if (/(ابعت|ابعتلي|هات|عايز|عاوز|send)/i.test(text) && /(سلايد|ملف|ملفات|شيت|pdf|slides|sheet|lecture|محاضر)/i.test(text)) {

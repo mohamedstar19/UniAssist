@@ -1,7 +1,7 @@
 import { parseFeatures, parseReminderPrefs } from "../features.js";
 import { db } from "../lib/db.js";
 import { redis } from "../lib/redis.js";
-import { endOfDay, endOfWeek, formatDue, localDateKey, localHour } from "../lib/time.js";
+import { endOfDay, endOfWeek, formatDue, isPastDue, localDateKey, localHour, startOfDay } from "../lib/time.js";
 import { enqueueNotify } from "../queues.js";
 import { esc, TYPE_LABEL } from "./format.js";
 
@@ -15,17 +15,18 @@ export async function sendDigests(now = new Date()): Promise<void> {
     if (!(await redis.set(key, "1", "EX", 36 * 3600, "NX"))) continue;
 
     const events = await db.event.findMany({
-      where: { batchId: batch.id, status: "active", dueAt: { gte: now, lte: endOfWeek(batch.timezone, now) }, type: { in: ["assignment", "quiz", "exam"] } },
+      where: { batchId: batch.id, status: "active", dueAt: { gte: startOfDay(batch.timezone, now), lte: endOfWeek(batch.timezone, now) }, type: { in: ["assignment", "quiz", "exam"] } },
       include: { course: true },
       orderBy: { dueAt: "asc" },
     });
-    if (!events.length) continue;
+    const live = events.filter((e) => !isPastDue(e.dueAt!, batch.timezone, now));
+    if (!live.length) continue;
     const todayEnd = endOfDay(batch.timezone, now);
 
     const students = await db.student.findMany({ where: { batchId: batch.id, acceptedTermsAt: { not: null } } });
     for (const s of students) {
       if (!parseReminderPrefs(s.reminderPrefs).digest) continue;
-      const mine = events.filter((e) => !e.courseId || !s.mutedCourseIds.includes(e.courseId));
+      const mine = live.filter((e) => !e.courseId || !s.mutedCourseIds.includes(e.courseId));
       if (!mine.length) continue;
       const today = mine.filter((e) => e.dueAt! <= todayEnd);
       const week = mine.filter((e) => e.dueAt! > todayEnd);

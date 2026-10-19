@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { parseReminderPrefs } from "../features.js";
 import { db } from "../lib/db.js";
 import { getFile } from "../lib/storage.js";
-import { endOfDay, endOfWeek, formatDue } from "../lib/time.js";
+import { endOfDay, endOfWeek, formatDue, startOfDay } from "../lib/time.js";
 import { esc, eventCard, studyButtons, TYPE_LABEL } from "../notify/format.js";
 import { materialLabel } from "../notify/material.js";
 import { rescheduleStudent } from "../notify/reminders.js";
@@ -61,7 +61,7 @@ async function agendaText(s: StudentWithBatch, until: Date, title: string, cours
       batchId: s.batchId,
       status: "active",
       ...(courseId ? { courseId } : { courseId: { notIn: s.mutedCourseIds } }),
-      dueAt: { gte: new Date(Date.now() - 60 * 60 * 1000), lte: until },
+      dueAt: { gte: startOfDay(tz), lte: until },
     },
     include: { course: true },
     orderBy: { dueAt: "asc" },
@@ -273,7 +273,7 @@ export async function sendFiles(ctx: import("grammy").Context, s: StudentWithBat
     const url = `${config.PUBLIC_URL}/b/${s.batch.webToken}/f/${m.id}`;
     lines.push(`• ${materialLabel(m.materialType)}${m.lectureNumber ? ` ${m.lectureNumber}` : ""}: <a href="${url}">${esc(m.title ?? m.filename ?? "ملف")}</a>`);
   }
-  lines.push("", `عايز ملفات محاضرة معينة؟ /files ${course.name} 4`);
+  lines.push("", `عايز ملفات محاضرة معينة؟ /files ${esc(course.name)} 4`);
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
   return true;
 }

@@ -3,6 +3,9 @@ import { parseFeatures } from "../src/features.js";
 import { fmtOffset, parseOffsets } from "../src/bot/student.js";
 import { mdToTelegramHtml, splitMarkdown } from "../src/notify/format.js";
 import { reminderTimes } from "../src/notify/reminders.js";
+import { isPastDue, relativeFromNow } from "../src/lib/time.js";
+import { similarTitles } from "../src/pipeline/events.js";
+import { checkUploads } from "../src/tutor/tutor.js";
 import { chunkText } from "../src/pipeline/media.js";
 import { shouldClassify } from "../src/pipeline/prefilter.js";
 import { lockWindow } from "../src/tutor/guard.js";
@@ -43,6 +46,21 @@ describe("reminders", () => {
     const due = new Date("2026-10-21T12:00:00Z"); // ~2 days ahead
     const times = reminderTimes(due, [4320, 1440, 180], now);
     expect(times.map((t) => t.toISOString())).toEqual(["2026-10-20T12:00:00.000Z", "2026-10-21T09:00:00.000Z"]);
+  });
+
+  it("anchors day-only quizzes at 8 AM and keeps quiet hours", () => {
+    const now = new Date("2026-10-19T10:00:00Z");
+    const dayOnly = new Date("2026-10-24T21:00:00Z"); // Sunday 25 Oct, 00:00 Cairo (UTC+3)
+    const times = reminderTimes(dayOnly, [4320, 1440, 180], now, "Africa/Cairo").map((t) => t.toISOString());
+    // 3d → Thu 08:00, 1d → Sat 08:00, 3h before 08:00 = 05:00 → moved to Sat 22:00 (all Cairo time)
+    expect(times).toEqual(["2026-10-22T05:00:00.000Z", "2026-10-24T05:00:00.000Z", "2026-10-24T19:00:00.000Z"]);
+  });
+
+  it("treats a day-only event as upcoming for the whole day", () => {
+    const dayOnly = new Date("2026-10-24T21:00:00Z"); // 25 Oct 00:00 Cairo
+    expect(isPastDue(dayOnly, "Africa/Cairo", new Date("2026-10-25T12:00:00Z"))).toBe(false);
+    expect(isPastDue(dayOnly, "Africa/Cairo", new Date("2026-10-25T21:30:00Z"))).toBe(true);
+    expect(relativeFromNow(dayOnly, new Date("2026-10-24T09:00:00Z"), "Africa/Cairo")).toBe("بكرة");
   });
 
   it("parses /remind arguments", () => {
@@ -131,5 +149,22 @@ describe("calendar feed", () => {
     expect(ics).toContain("DTSTART:20261022T110000Z");
     expect(ics).toContain("DTEND:20261022T120000Z");
     expect(ics).toContain("SUMMARY:Quiz 1\\, Networks");
+  });
+});
+
+describe("dedupe titles", () => {
+  it("matches re-posts, not different announcements", () => {
+    expect(similarTitles("Quiz 2 - Networks", "Networks quiz 2")).toBe(true);
+    expect(similarTitles("تسليم شيت 3", "تسليم الشيت 3")).toBe(true);
+    expect(similarTitles("Office hours changed", "Grades of midterm are out")).toBe(false);
+    expect(similarTitles("Quiz 2 - Networks", "Quiz 3 - Networks")).toBe(false);
+  });
+});
+
+describe("upload limits", () => {
+  it("rejects files the model can't take", () => {
+    expect(checkUploads([{ data: Buffer.alloc(10), mimeType: "image/jpeg" }])).toBeNull();
+    expect(checkUploads([{ data: Buffer.alloc(6 * 1024 * 1024), mimeType: "image/png" }])).toContain("5MB");
+    expect(checkUploads([{ data: Buffer.alloc(10), mimeType: "application/vnd.ms-powerpoint" }])).toContain("مش مدعوم");
   });
 });

@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { db } from "../lib/db.js";
 import { logger } from "../lib/logger.js";
 import { getFile } from "../lib/storage.js";
-import { formatDue, relativeFromNow } from "../lib/time.js";
+import { formatDue, isPastDue, relativeFromNow } from "../lib/time.js";
 import { esc, TYPE_LABEL } from "../notify/format.js";
 import { materialLabel } from "../notify/material.js";
 import { buildIcs } from "./ics.js";
@@ -46,18 +46,18 @@ export async function startWeb(): Promise<void> {
 
     const now = new Date();
     const card = (e: (typeof events)[number]) => {
-      const past = e.dueAt && e.dueAt < now;
+      const past = !!e.dueAt && isPastDue(e.dueAt, tz, now);
       const cls = e.status === "cancelled" ? "card cancelled" : past ? "card past" : "card";
       return `<article class="${cls}">
         <div class="meta"><span class="tag t-${e.type}">${TYPE_LABEL[e.type] ?? e.type}</span>${e.course ? `<span class="course">${esc(e.course.name)}</span>` : ""}${e.status === "cancelled" ? `<span class="tag t-cancel">اتلغى</span>` : ""}</div>
         <h3>${esc(e.title)}</h3>
-        ${e.type !== "announcement" || e.dueAt ? `<div class="due">🗓️ ${formatDue(e.dueAt, tz)}${e.dueAt && !past ? ` <small>(${relativeFromNow(e.dueAt)})</small>` : ""}</div>` : ""}
+        ${e.type !== "announcement" || e.dueAt ? `<div class="due">🗓️ ${formatDue(e.dueAt, tz)}${e.dueAt && !past ? ` <small>(${relativeFromNow(e.dueAt, now, tz)})</small>` : ""}</div>` : ""}
         ${e.description ? `<p>${esc(e.description).replace(/\n/g, "<br>")}</p>` : ""}
       </article>`;
     };
 
-    const upcoming = events.filter((e) => !e.dueAt || e.dueAt >= now);
-    const past = events.filter((e) => e.dueAt && e.dueAt < now).reverse();
+    const upcoming = events.filter((e) => !e.dueAt || !isPastDue(e.dueAt, tz, now));
+    const past = events.filter((e) => e.dueAt && isPastDue(e.dueAt, tz, now)).reverse();
 
     const byCourse = new Map<string, typeof media>();
     for (const m of media) {
@@ -97,9 +97,14 @@ export async function startWeb(): Promise<void> {
     const data = await getFile(media.storageKey).catch(() => null);
     if (!data) return reply.code(404).send("file is no longer available");
     const name = encodeURIComponent(media.filename ?? `${media.title ?? "file"}`);
+    // Only PDFs and plain images open in the browser; anything else (HTML, SVG…) is downloaded,
+    // so a file posted in a group can never run scripts on this site.
+    const safeInline = media.mimeType === "application/pdf" || /^image\/(jpeg|png|gif|webp)$/.test(media.mimeType);
     return reply
-      .type(media.mimeType)
-      .header("content-disposition", `inline; filename*=UTF-8''${name}`)
+      .type(safeInline ? media.mimeType : "application/octet-stream")
+      .header("content-disposition", `${safeInline ? "inline" : "attachment"}; filename*=UTF-8''${name}`)
+      .header("x-content-type-options", "nosniff")
+      .header("content-security-policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox")
       .header("x-robots-tag", "noindex")
       .send(data);
   });

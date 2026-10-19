@@ -15,6 +15,9 @@ export interface LlmUsage {
   tokensOut: number;
 }
 
+/** The model answered but the output didn't match the schema (truncated, refused mid-way…). Retrying rarely helps. */
+export class LlmOutputError extends Error {}
+
 export class LlmRefusalError extends Error {
   constructor(public category: string | null | undefined) {
     super(`Model declined the request (${category ?? "unknown"})`);
@@ -51,7 +54,8 @@ export async function llmJson<S extends z.ZodType>(opts: {
   effort?: Effort;
 }): Promise<{ data: z.infer<S>; usage: LlmUsage }> {
   const { betas, fallbacks } = fallbackParams(opts.model);
-  const msg = await anthropic.beta.messages.parse({
+  const msg = await anthropic.beta.messages
+    .parse({
     model: opts.model,
     max_tokens: opts.maxTokens ?? 16000,
     system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
@@ -59,11 +63,16 @@ export async function llmJson<S extends z.ZodType>(opts: {
     output_config: { format: betaZodOutputFormat(opts.schema), effort: opts.effort ?? "low" },
     ...(betas.length ? { betas } : {}),
     ...(fallbacks ? { fallbacks } : {}),
-  });
+  })
+    .catch((err: unknown) => {
+      // API errors (rate limit, overload, network) keep their type so the queue can retry them.
+      if (err instanceof Anthropic.APIError) throw err;
+      throw new LlmOutputError(`structured output could not be parsed: ${String(err).slice(0, 200)}`);
+    });
   if (msg.stop_reason === "refusal") throw new LlmRefusalError(msg.stop_details?.category);
   if (msg.parsed_output == null) {
     logger.warn({ stop: msg.stop_reason }, "structured output missing");
-    throw new Error(`LLM returned no parseable output (stop_reason=${msg.stop_reason})`);
+    throw new LlmOutputError(`LLM returned no parseable output (stop_reason=${msg.stop_reason})`);
   }
   return { data: msg.parsed_output as z.infer<S>, usage: usageOf(msg) };
 }

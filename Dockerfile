@@ -25,4 +25,4 @@ RUN mkdir -p /app/data && chown node:node /app /app/data
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/main.js"]

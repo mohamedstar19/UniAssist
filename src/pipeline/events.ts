@@ -9,6 +9,7 @@ import { announceEvent, askRepToConfirm, notifyReps, type AnnounceKind } from ".
 import { esc } from "../notify/format.js";
 import { scheduleEventReminders } from "../notify/reminders.js";
 import type { ExtractItem } from "./extract.js";
+import { normalizeArabic } from "./prefilter.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -65,8 +66,32 @@ function str(v: unknown): string | null {
   return v instanceof Date ? v.toISOString() : String(v);
 }
 
-/** Same course + same type + due within ±1 day (or both undated) = the same event, re-posted. */
-export async function findDuplicate(batchId: string, item: { type: string; courseId: string | null; dueAt: Date | null }): Promise<Event | null> {
+/** Rough title match: same words after normalising Arabic spelling. */
+export function similarTitles(a: string, b: string): boolean {
+  // Words after normalising Arabic spelling, without the "ال" prefix; numbers count ("Quiz 2" ≠ "Quiz 3").
+  const words = (s: string) =>
+    new Set(
+      normalizeArabic(s)
+        .split(/[^\p{L}\p{N}]+/u)
+        .map((w) => (w.startsWith("ال") && w.length > 3 ? w.slice(2) : w))
+        .filter((w) => w.length >= 2 || /\d/.test(w)),
+    );
+  const wa = words(a);
+  const wb = words(b);
+  if (!wa.size || !wb.size) return false;
+  // Different numbers mean different items ("Quiz 2" vs "Quiz 3", "Sheet 4" vs "Sheet 5").
+  const nums = (ws: Set<string>) => [...ws].filter((w) => /^\d+$/.test(w)).sort().join(",");
+  if (nums(wa) && nums(wb) && nums(wa) !== nums(wb)) return false;
+  const common = [...wa].filter((w) => wb.has(w)).length;
+  return common / Math.min(wa.size, wb.size) >= 0.6;
+}
+
+/**
+ * Same course + same type + due within ±1 day = the same event, re-posted.
+ * Undated items and announcements also need a similar title: two different
+ * announcements of the same course are not duplicates.
+ */
+export async function findDuplicate(batchId: string, item: { type: string; courseId: string | null; dueAt: Date | null; title: string }): Promise<Event | null> {
   const recent = await db.event.findMany({
     where: {
       batchId,
@@ -78,8 +103,9 @@ export async function findDuplicate(batchId: string, item: { type: string; cours
   });
   return (
     recent.find((e) => {
-      if (!e.dueAt && !item.dueAt) return true;
-      if (!e.dueAt || !item.dueAt) return false;
+      const needsTitle = item.type === "announcement" || !e.dueAt || !item.dueAt;
+      if (needsTitle && !similarTitles(e.title, item.title)) return false;
+      if (!e.dueAt || !item.dueAt) return !e.dueAt && !item.dueAt;
       return Math.abs(e.dueAt.getTime() - item.dueAt.getTime()) <= DAY_MS;
     }) ?? null
   );
@@ -99,7 +125,7 @@ export async function applyExtraction(items: ExtractItem[], src: MessageSource):
       ? await db.event.findFirst({ where: { id: item.targetEventId, batchId: src.batchId } })
       : null;
 
-    if (item.newCourseName && !courseId) {
+    if (item.newCourseName && !courseId && (await redis.set(`newcourse:${src.batchId}:${normalizeArabic(item.newCourseName)}`, "1", "EX", 7 * 86400, "NX"))) {
       await notifyReps(
         src.batchId,
         `📚 فيه مادة اتذكرت ومش موجودة في القايمة: <b>${esc(item.newCourseName)}</b>\nلو مادة جديدة ضيفها بـ:\n<code>/addcourse ${esc(item.newCourseName)}</code>`,
@@ -142,7 +168,7 @@ export async function applyExtraction(items: ExtractItem[], src: MessageSource):
       }
 
       // create (or an update whose target we couldn't find: treat as new, the dedupe check still applies)
-      const dup = await findDuplicate(src.batchId, { type: item.type, courseId, dueAt });
+      const dup = await findDuplicate(src.batchId, { type: item.type, courseId, dueAt, title: item.title });
       if (dup) {
         if (item.description && !dup.description) await applyPatch(dup.id, { description: item.description }, src.rawMessageId);
         touched.push(dup.id);
@@ -234,6 +260,8 @@ interface StoredChange {
 }
 
 export async function proposeChange(eventId: string, patch: EventPatch, fromMessageId: string | undefined, summary: string): Promise<void> {
+  // A retried pipeline job must not ask the rep twice about the same message.
+  if (fromMessageId && !(await redis.set(`chgmsg:${fromMessageId}:${eventId}`, "1", "EX", 14 * 24 * 3600, "NX"))) return;
   const id = randomBytes(6).toString("hex");
   const stored: StoredChange = { eventId, patch: { ...patch, dueAt: patch.dueAt?.toISOString() ?? patch.dueAt }, fromMessageId, summary };
   await redis.set(`chg:${id}`, JSON.stringify(stored), "EX", 14 * 24 * 3600);
@@ -255,11 +283,17 @@ export async function proposeChange(eventId: string, patch: EventPatch, fromMess
   ]);
 }
 
-export async function resolveProposedChange(id: string, accept: boolean): Promise<string> {
-  const raw = await redis.getdel(`chg:${id}`);
+/** actorBatchId: the rep's batch (null for admins, who may act on any batch). */
+export async function resolveProposedChange(id: string, accept: boolean, actorBatchId: string | null): Promise<string> {
+  const raw = await redis.get(`chg:${id}`);
   if (!raw) return "التعديل ده اتحسم قبل كده أو انتهت صلاحيته.";
-  if (!accept) return "تمام، اتجاهل.";
   const c = JSON.parse(raw) as StoredChange;
+  if (actorBatchId) {
+    const ev = await db.event.findUnique({ where: { id: c.eventId }, select: { batchId: true } });
+    if (ev?.batchId !== actorBatchId) return "مش لاقي التعديل ده.";
+  }
+  if (!(await redis.del(`chg:${id}`))) return "التعديل ده اتحسم قبل كده.";
+  if (!accept) return "تمام، اتجاهل.";
   const patch: EventPatch = { ...(c.patch as EventPatch) };
   if (typeof c.patch.dueAt === "string") patch.dueAt = new Date(c.patch.dueAt);
   await commitChange(c.eventId, patch, c.fromMessageId, c.summary);

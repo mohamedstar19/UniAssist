@@ -132,6 +132,10 @@ describe("bot flows", () => {
     await privateText(2001, "/today");
     expect(texts()[0]).toContain("النهارده");
 
+    sent.length = 0;
+    await privateText(2001, "/link");
+    expect(texts()[0]).toContain(`/b/${batch.webToken}`);
+
     // Make them rep, then the rep adds a course
     await privateText(ADMIN, `/makerep ${batch.inviteCode} | 2001`);
     expect((await db.student.findUniqueOrThrow({ where: { id: student.id } })).role).toBe("rep");

@@ -8,8 +8,9 @@ import { logger } from "./lib/logger.js";
 import { createRedis } from "./lib/redis.js";
 import { sendDigests } from "./notify/digest.js";
 import { fireDueReminders } from "./notify/reminders.js";
+import { runAnnouncement } from "./notify/announce.js";
 import { processRawMessage } from "./pipeline/process.js";
-import { type MessageJob, type NotifyJob, QUEUE, ticksQueue } from "./queues.js";
+import { type AnnounceJob, type MessageJob, type NotifyJob, QUEUE, ticksQueue } from "./queues.js";
 
 export async function startWorkers(): Promise<Worker[]> {
   // Messages are processed one at a time so a date change is always applied after the original announcement.
@@ -23,6 +24,9 @@ export async function startWorkers(): Promise<Worker[]> {
       await alertAdmins(`⚠️ رسالة فشلت في التحليل بعد كل المحاولات (${job.data.rawMessageId}): ${err.message.slice(0, 300)}`);
     }
   });
+
+  const announce = new Worker<AnnounceJob>(QUEUE.announce, async (job) => runAnnouncement(job.data), { connection: createRedis(), concurrency: 2 });
+  announce.on("failed", (job, err) => logger.error({ err, eventId: job?.data.eventId }, "announce failed"));
 
   // Telegram allows ~30 messages/second; stay under it.
   const notify = new Worker<NotifyJob>(
@@ -65,7 +69,7 @@ export async function startWorkers(): Promise<Worker[]> {
   await ticksQueue.upsertJobScheduler("cleanup", { pattern: "30 3 * * *", tz: "Africa/Cairo" }, { name: "cleanup" });
 
   logger.info("workers started");
-  return [messages, notify, ticks];
+  return [messages, announce, notify, ticks];
 }
 
 /** Privacy: chatter is kept only N days; finished study sessions only a week. */

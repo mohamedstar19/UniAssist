@@ -1,3 +1,4 @@
+import { sequentialize } from "@grammyjs/runner";
 import { GrammyError } from "grammy";
 import { ingestMessage } from "../ingest/store.js";
 import { normalizeTelegram } from "../ingest/telegram.js";
@@ -8,6 +9,9 @@ import { registerStudentHandlers } from "./student.js";
 import { registerStudyHandlers } from "./study.js";
 
 export function setupBot(): void {
+  // Different chats run in parallel; one chat's updates are handled in order.
+  bot.use(sequentialize((ctx) => ctx.chat?.id.toString() ?? ctx.from?.id.toString()));
+
   // Order matters: admin/rep commands first (admins may not be registered students),
   // then group ingestion, then the student flows (which require registration).
   registerManageHandlers(bot);

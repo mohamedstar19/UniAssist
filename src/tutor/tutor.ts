@@ -42,7 +42,25 @@ const MODE_SETTINGS: Record<TutorMode, { effort: Effort; label: string }> = {
   plan: { effort: "low", label: "plan" },
 };
 
-const MAX_FILE_BLOCK_BYTES = 8 * 1024 * 1024;
+// API limits: images ≤ 5 MB each, whole request ≤ 32 MB (base64 adds ~33%).
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_PDF_BYTES = 8 * 1024 * 1024;
+const MAX_TOTAL_FILE_BYTES = 18 * 1024 * 1024;
+const MAX_FOLLOW_UPS = 10;
+
+/** Returns an error message when the student's files can't be sent to the model. */
+export function checkUploads(files: UploadedFile[]): string | null {
+  let total = 0;
+  for (const f of files) {
+    total += f.data.length;
+    if (f.mimeType.startsWith("image/") && f.data.length > MAX_IMAGE_BYTES) return "الصورة كبيرة أوي (أكتر من 5MB). ابعتها كصورة عادية مش ملف.";
+    if (f.mimeType === "application/pdf" && f.data.length > MAX_PDF_BYTES) return "الـPDF كبير أوي (أكتر من 8MB). ابعت الصفحات المهمة بس.";
+    if (!f.mimeType.startsWith("image/") && f.mimeType !== "application/pdf" && !f.mimeType.startsWith("text/")) {
+      return "النوع ده من الملفات مش مدعوم. ابعت صورة أو PDF.";
+    }
+  }
+  return total > MAX_TOTAL_FILE_BYTES ? "الملفات كبيرة أوي مع بعض. ابعت أقل." : null;
+}
 const CONV_TTL_SECONDS = 45 * 60;
 
 // ---- Gate: feature flag, terms, exam lock, daily limits -------------------------------------
@@ -91,8 +109,11 @@ async function eventFiles(eventId: string): Promise<{ blocks: ContentBlock[]; te
   const media = await db.media.findMany({ where: { rawMessageId: { in: msgIds } }, take: 5, orderBy: { createdAt: "asc" } });
   const blocks: ContentBlock[] = [];
   const texts: string[] = [];
+  let total = 0;
   for (const m of media) {
-    if (m.sizeBytes <= MAX_FILE_BLOCK_BYTES && (m.kind === "pdf" || m.kind === "image")) {
+    const limit = m.kind === "image" ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
+    if ((m.kind === "pdf" || m.kind === "image") && m.sizeBytes <= limit && total + m.sizeBytes <= MAX_TOTAL_FILE_BYTES) {
+      total += m.sizeBytes;
       const block = fileBlock(await getFile(m.storageKey), m.mimeType, m.filename ?? undefined);
       if (block) {
         blocks.push(block);
@@ -118,6 +139,8 @@ async function upcomingForPrompt(batch: Batch): Promise<string> {
 
 interface Conversation {
   mode: TutorMode;
+  /** follow-ups so far; capped so one /solve can't turn into unlimited solutions */
+  turns?: number;
   eventId?: string | null;
   courseId?: string | null;
   messages: Anthropic.Beta.BetaMessageParam[];
@@ -143,6 +166,8 @@ export async function endConversation(studentId: string): Promise<void> {
 
 export async function runTutor(req: TutorRequest): Promise<TutorResult> {
   const { student } = req;
+  const tooBig = checkUploads(req.files ?? []);
+  if (tooBig) return { ok: false, reason: tooBig };
   const blocked = await gate(student, req.mode);
   if (blocked) return { ok: false, reason: blocked };
 
@@ -231,6 +256,12 @@ export async function followUp(student: StudentWithBatch, text: string, files: U
   const raw = await redis.get(`conv:${student.id}`);
   if (!raw) return { ok: false, reason: "no_conversation" };
   const conv = JSON.parse(raw) as Conversation;
+  if ((conv.turns ?? 0) >= MAX_FOLLOW_UPS) {
+    await endConversation(student.id);
+    return { ok: false, reason: "المحادثة دي طولت 🙂 ابدأ طلب جديد (/explain أو /solve أو ابعت السؤال)." };
+  }
+  const tooBig = checkUploads(files);
+  if (tooBig) return { ok: false, reason: tooBig };
   const blocked = await gate(student, "explain");
   if (blocked) return { ok: false, reason: blocked };
 
@@ -241,6 +272,7 @@ export async function followUp(student: StudentWithBatch, text: string, files: U
   if (result.ok) {
     await saveConversation(student.id, {
       ...conv,
+      turns: (conv.turns ?? 0) + 1,
       messages: [...conv.messages, { role: "user", content: text }, { role: "assistant", content: result.text }],
     });
   }

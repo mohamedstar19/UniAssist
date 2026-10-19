@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { db } from "../src/lib/db.js";
 import { redis } from "../src/lib/redis.js";
-import { notifyQueue } from "../src/queues.js";
+import { runAnnouncement } from "../src/notify/announce.js";
+import { announceQueue, notifyQueue } from "../src/queues.js";
 import type { ExtractItem } from "../src/pipeline/extract.js";
 import { applyExtraction, resolveProposedChange } from "../src/pipeline/events.js";
 import { activeExamLock } from "../src/tutor/guard.js";
@@ -41,6 +42,15 @@ async function rawMessage(sender: string, text = "msg") {
   return db.rawMessage.create({ data: { groupId, externalId: `m${msgCounter}`, senderHint: sender, text, sentAt: new Date() } });
 }
 
+/** Runs the queued announcement jobs like the worker would. */
+async function drainAnnouncements() {
+  for (const job of await announceQueue.getJobs(["waiting", "delayed", "prioritized"])) {
+    await runAnnouncement(job.data);
+    await runAnnouncement(job.data); // simulate a retry: must not send twice
+    await job.remove();
+  }
+}
+
 async function wipe() {
   await db.$executeRawUnsafe(
     'TRUNCATE "Reminder","Correction","EventRevision","SolverJob","StudySession","Event","MaterialChunk","Media","RawMessage","Group","LectureSlot","Instructor","Student","Course","Batch","Faculty" CASCADE',
@@ -53,7 +63,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await notifyQueue.obliterate({ force: true });
+  await announceQueue.obliterate({ force: true });
   await notifyQueue.close();
+  await announceQueue.close();
   await redis.quit();
   await db.$disconnect();
 });
@@ -61,6 +73,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await wipe();
   await notifyQueue.obliterate({ force: true });
+  await announceQueue.obliterate({ force: true });
+  await redis.flushdb();
   const faculty = await db.faculty.create({ data: { name: "Engineering", university: "Cairo" } });
   const batch = await db.batch.create({
     data: { facultyId: faculty.id, name: "Comm 3", year: 2026, inviteCode: "ABC123", webToken: "tok", features: { repConfirmAll: false } },
@@ -80,6 +94,7 @@ describe("applyExtraction", () => {
   it("creates an active event, notifies, and schedules reminders except for muted students", async () => {
     const msg = await rawMessage("201011111111");
     const [id] = await applyExtraction([item({})], { rawMessageId: msg.id, batchId, senderIsInstructor: true });
+    await drainAnnouncements();
     const event = await db.event.findUniqueOrThrow({ where: { id: id! } });
     expect(event.status).toBe("active");
     expect(event.notifiedAt).not.toBeNull();
@@ -144,7 +159,7 @@ describe("applyExtraction", () => {
     expect(jobs[0]!.data.chatId).toBe("3"); // the rep
     const data = jobs[0]!.data.buttons![0]![0]!.data!;
     const changeId = data.split(":")[2]!;
-    expect(await resolveProposedChange(changeId, true)).toContain("اتطبق");
+    expect(await resolveProposedChange(changeId, true, batchId)).toContain("اتطبق");
     const applied = await db.event.findUniqueOrThrow({ where: { id: id! } });
     expect(applied.dueAt!.getTime()).toBeGreaterThan(before.dueAt!.getTime());
   });
@@ -171,6 +186,17 @@ describe("applyExtraction", () => {
     const event = await db.event.findUniqueOrThrow({ where: { id: id! } });
     expect(event.status).toBe("cancelled");
     expect(await db.reminder.count({ where: { eventId: id!, sentAt: null } })).toBe(0);
+  });
+});
+
+describe("dedupe of undated items", () => {
+  it("keeps two different announcements of the same course", async () => {
+    const m1 = await rawMessage("201011111111");
+    const m2 = await rawMessage("201011111111");
+    const ann = { type: "announcement" as const, dueAt: null };
+    await applyExtraction([item({ ...ann, title: "Office hours moved to Monday" })], { rawMessageId: m1.id, batchId, senderIsInstructor: true });
+    await applyExtraction([item({ ...ann, title: "Midterm grades are out" })], { rawMessageId: m2.id, batchId, senderIsInstructor: true });
+    expect(await db.event.count({ where: { type: "announcement" } })).toBe(2);
   });
 });
 

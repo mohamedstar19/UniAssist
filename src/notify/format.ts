@@ -23,7 +23,7 @@ export function eventCard(e: EventWithCourse, tz: string, opts: { header?: strin
   lines.push(`<b>${TYPE_LABEL[e.type] ?? e.type}${e.course ? ` · ${esc(e.course.name)}` : ""}</b>`);
   lines.push(esc(e.title));
   if (e.type !== "announcement" || e.dueAt) {
-    const rel = opts.showRelative && e.dueAt ? ` (${relativeFromNow(e.dueAt)})` : "";
+    const rel = opts.showRelative && e.dueAt ? ` (${relativeFromNow(e.dueAt, new Date(), tz)})` : "";
     lines.push(`🗓️ ${formatDue(e.dueAt, tz)}${rel}`);
   }
   if (e.description) lines.push("", esc(e.description.length > 900 ? `${e.description.slice(0, 900)}…` : e.description));

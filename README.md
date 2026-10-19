@@ -46,7 +46,8 @@ cd /opt/uniassist
 
 # 3) الإعدادات
 cp .env.example .env
-nano .env        # املا TELEGRAM_BOT_TOKEN و ANTHROPIC_API_KEY و ADMIN_TELEGRAM_IDS و DOMAIN و PUBLIC_URL و POSTGRES_PASSWORD
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" .env   # باسورد عشوائي للداتابيز
+nano .env        # املا TELEGRAM_BOT_TOKEN و ANTHROPIC_API_KEY و ADMIN_TELEGRAM_IDS و DOMAIN و PUBLIC_URL
 
 # 4) شغّل
 docker compose up -d --build

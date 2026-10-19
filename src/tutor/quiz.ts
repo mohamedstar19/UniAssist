@@ -65,7 +65,7 @@ export async function startQuiz(
     effort: "medium",
   });
   const questions = data.questions
-    .filter((q) => q.options.length >= 2 && q.correctIndex >= 0 && q.correctIndex < q.options.length)
+    .filter((q) => q.options.length >= 2 && q.options.length <= 6 && q.correctIndex >= 0 && q.correctIndex < q.options.length)
     .slice(0, count);
   if (!questions.length) return { ok: false, reason: "معرفتش أطلع أسئلة كويسة من الملفات دي، جرب محاضرة تانية." };
 
