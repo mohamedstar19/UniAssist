@@ -41,6 +41,8 @@ const EnvSchema = z.object({
   S3_SECRET_ACCESS_KEY: z.string().optional(),
 
   SENTRY_DSN: z.string().optional(),
+  /** Signs the admin page session cookie. Defaults to a value derived from the bot token. */
+  SESSION_SECRET: z.string().optional().transform((v) => (v && v.length >= 16 ? v : undefined)),
   /** Days to keep the text of messages classified as noise */
   NOISE_RETENTION_DAYS: z.coerce.number().default(30),
 });

@@ -9,6 +9,8 @@ import { esc, eventCard, repButtons } from "../notify/format.js";
 import { scheduleEventReminders } from "../notify/reminders.js";
 import { batchCourses, matchCourseByName } from "../pipeline/courses.js";
 import { applyPatch, confirmEvent, resolveProposedChange } from "../pipeline/events.js";
+import { createBatch } from "../admin/batches.js";
+import { createAdminLoginLink } from "../web/adminAuth.js";
 import { applyRepCorrection, type CorrectionActor } from "../pipeline/correction.js";
 import { argText, eventIdFromReply, getStudent, isAdmin, isRep, newCode } from "./helpers.js";
 
@@ -59,6 +61,8 @@ const REP_HELP = `🛠️ <b>أوامر المندوب</b>
 وفي الجروب (تيليجرام): /linkgroup كود_الدعوة`;
 
 const ADMIN_HELP = `👑 <b>أوامر الأدمن</b>
+/admin: لينك دخول صفحة الأدمن على الموقع (أسهل طريقة لإدارة كل حاجة)
+
 /newbatch الجامعة | الكلية | اسم الدفعة | السنة
 /groups: الجروبات اللي البوت شايفها ومش مربوطة
 /link رقم_الجروب | كود_الدعوة | batch أو section أو course
@@ -111,6 +115,13 @@ export function registerManageHandlers(bot: Bot): void {
   });
   priv.command("adminhelp", async (ctx) => {
     if (isAdmin(ctx)) await ctx.reply(ADMIN_HELP, { parse_mode: "HTML" });
+  });
+
+  // One-time login link to the admin web page
+  priv.command("admin", async (ctx) => {
+    if (!isAdmin(ctx)) return ctx.reply("الأمر ده للأدمن بس.");
+    const link = await createAdminLoginLink(String(ctx.from.id));
+    await ctx.reply(`🔐 لينك الدخول لصفحة الأدمن (صالح 10 دقايق ولمرة واحدة):\n${link}`, { link_preview_options: { is_disabled: true } });
   });
 
   // ---- Rep ---------------------------------------------------------------------------------------
@@ -224,12 +235,7 @@ export function registerManageHandlers(bot: Bot): void {
     if (!isAdmin(ctx)) return;
     const [university, facultyName, name, year] = fields(ctx);
     if (!university || !facultyName || !name) return ctx.reply("اكتبها كده: /newbatch جامعة القاهرة | كلية الهندسة | هندسة اتصالات - تالتة | 2026");
-    const faculty =
-      (await db.faculty.findFirst({ where: { university, name: facultyName } })) ??
-      (await db.faculty.create({ data: { university, name: facultyName } }));
-    const batch = await db.batch.create({
-      data: { facultyId: faculty.id, name, year: Number(year) || new Date().getFullYear(), inviteCode: newCode(6), webToken: randomBytes(12).toString("base64url") },
-    });
+    const batch = await createBatch({ university, facultyName, name, year: Number(year) });
     const me = bot.botInfo.username;
     await ctx.reply(
       `✅ الدفعة اتعملت: <b>${esc(batch.name)}</b>\nكود الدعوة: <code>${batch.inviteCode}</code>\nلينك التسجيل: https://t.me/${me}?start=join_${batch.inviteCode}\nالأجندة: ${config.PUBLIC_URL}/b/${batch.webToken}\n\n` +
