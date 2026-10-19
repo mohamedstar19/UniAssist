@@ -1,0 +1,45 @@
+{
+  "name": "uniassist",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UniAssist - مساعد طالب الجامعة: يقرأ جروبات الدفعة وينظم المواعيد ويساعد في المذاكرة",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "db:migrate": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "eval:classify": "tsx src/scripts/eval-classify.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@aws-sdk/client-s3": "^3.1152.0",
+    "@prisma/client": "^6.19.3",
+    "@sentry/node": "^11.8.0",
+    "baileys": "7.0.0-rc14",
+    "bullmq": "^6.3.17",
+    "fastify": "^5.12.7",
+    "grammy": "^1.46.0",
+    "ioredis": "^6.0.0",
+    "luxon": "^3.7.2",
+    "pdf-parse": "^2.4.5",
+    "pino": "^10.4.0",
+    "prisma": "^6.19.3",
+    "qrcode": "^1.5.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.6",
+    "@types/node": "^22.20.5",
+    "@types/qrcode": "^1.5.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

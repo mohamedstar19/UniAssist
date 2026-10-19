@@ -1,0 +1,355 @@
+// UniAssist data model.
+// The raw message is stored as-is; the "event" extracted from it is a separate
+// entity with a revision history. A date change by the doctor is a revision on
+// the same event, not a new event.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Source {
+  whatsapp
+  telegram
+}
+
+enum GroupType {
+  batch
+  section
+  course
+}
+
+enum InstructorRole {
+  doctor
+  ta
+}
+
+enum StudentRole {
+  student
+  rep
+}
+
+enum EventType {
+  assignment
+  quiz
+  exam
+  schedule_change
+  announcement
+}
+
+enum EventStatus {
+  pending // waiting for the rep to confirm (low confidence)
+  active
+  cancelled
+  rejected // the rep said it is not a real event
+}
+
+enum MessageClass {
+  assignment
+  quiz
+  exam
+  schedule_change
+  announcement
+  material
+  noise
+}
+
+enum MediaKind {
+  image
+  pdf
+  document
+  other
+}
+
+enum MaterialType {
+  slides
+  sheet
+  assignment
+  model_answer
+  past_exam
+  other
+}
+
+enum SolverMode {
+  explain
+  hint
+  solve
+  review
+  quiz
+  pastexam
+  plan
+  ask
+}
+
+model Faculty {
+  id         String   @id @default(cuid())
+  name       String
+  university String
+  batches    Batch[]
+  createdAt  DateTime @default(now())
+}
+
+model Batch {
+  id         String   @id @default(cuid())
+  facultyId  String
+  faculty    Faculty  @relation(fields: [facultyId], references: [id])
+  year       Int
+  name       String
+  inviteCode String   @unique
+  webToken   String   @unique // secret part of the public agenda link
+  channelId  String? // Telegram channel the batch feed is posted to
+  timezone   String   @default("Africa/Cairo")
+  /// Feature flags and limits, see src/features.ts
+  features   Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  groups      Group[]
+  courses     Course[]
+  students    Student[]
+  events      Event[]
+  media       Media[]
+  chunks      MaterialChunk[]
+  lectureSlots LectureSlot[]
+}
+
+model Group {
+  id         String     @id @default(cuid())
+  batchId    String?
+  batch      Batch?     @relation(fields: [batchId], references: [id])
+  source     Source
+  externalId String
+  title      String?
+  type       GroupType  @default(batch)
+  createdAt  DateTime   @default(now())
+  messages   RawMessage[]
+
+  @@unique([source, externalId])
+}
+
+model Course {
+  id          String       @id @default(cuid())
+  batchId     String
+  batch       Batch        @relation(fields: [batchId], references: [id])
+  name        String
+  code        String?
+  aliases     String[]
+  instructors Instructor[]
+  events      Event[]
+  media       Media[]
+  chunks      MaterialChunk[]
+  lectureSlots LectureSlot[]
+  createdAt   DateTime     @default(now())
+
+  @@unique([batchId, name])
+}
+
+model Instructor {
+  id        String         @id @default(cuid())
+  courseId  String
+  course    Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  name      String
+  role      InstructorRole @default(doctor)
+  /// Phone number (WhatsApp) or Telegram user id used to recognise the sender
+  phoneHint String?
+}
+
+/// Weekly lecture schedule, used to resolve "next lecture".
+model LectureSlot {
+  id        String @id @default(cuid())
+  batchId   String
+  batch     Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  weekday   Int // 1 = Monday ... 7 = Sunday (ISO)
+  startTime String // "10:30"
+}
+
+model Student {
+  id            String      @id @default(cuid())
+  batchId       String
+  batch         Batch       @relation(fields: [batchId], references: [id])
+  telegramId    String      @unique
+  phone         String?
+  name          String
+  role          StudentRole @default(student)
+  /// { offsetsMinutes: number[], digest: boolean }
+  reminderPrefs Json        @default("{}")
+  mutedCourseIds String[]   @default([])
+  acceptedTermsAt DateTime?
+  joinedAt      DateTime    @default(now())
+
+  reminders   Reminder[]
+  solverJobs  SolverJob[]
+  corrections Correction[]
+}
+
+model RawMessage {
+  id             String        @id @default(cuid())
+  groupId        String
+  group          Group         @relation(fields: [groupId], references: [id])
+  externalId     String
+  senderHint     String?
+  senderName     String?
+  text           String?
+  sentAt         DateTime
+  replyToExternalId String?
+  replyToId      String?
+  replyTo        RawMessage?   @relation("Replies", fields: [replyToId], references: [id])
+  replies        RawMessage[]  @relation("Replies")
+  classification MessageClass?
+  classConfidence Float?
+  processedAt    DateTime?
+  createdAt      DateTime      @default(now())
+
+  media          Media[]
+  createdEvents  Event[]       @relation("EventSource")
+  revisions      EventRevision[]
+
+  @@unique([groupId, externalId])
+  @@index([processedAt])
+}
+
+model Media {
+  id            String        @id @default(cuid())
+  rawMessageId  String?
+  rawMessage    RawMessage?   @relation(fields: [rawMessageId], references: [id])
+  batchId       String
+  batch         Batch         @relation(fields: [batchId], references: [id])
+  courseId      String?
+  course        Course?       @relation(fields: [courseId], references: [id])
+  kind          MediaKind
+  materialType  MaterialType  @default(other)
+  lectureNumber Int?
+  mimeType      String
+  storageKey    String
+  filename      String?
+  sizeBytes     Int
+  extractedText String?
+  title         String?
+  processedAt   DateTime?
+  createdAt     DateTime      @default(now())
+
+  chunks        MaterialChunk[]
+
+  @@index([batchId, courseId])
+}
+
+/// Pieces of course material used to ground the study assistant.
+/// A GIN full-text index on content is created in the migration SQL.
+model MaterialChunk {
+  id        String  @id @default(cuid())
+  mediaId   String
+  media     Media   @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  batchId   String
+  batch     Batch   @relation(fields: [batchId], references: [id])
+  courseId  String?
+  course    Course? @relation(fields: [courseId], references: [id])
+  idx       Int
+  page      Int?
+  content   String
+
+  @@index([batchId, courseId])
+}
+
+model Event {
+  id                    String       @id @default(cuid())
+  batchId               String
+  batch                 Batch        @relation(fields: [batchId], references: [id])
+  courseId              String?
+  course                Course?      @relation(fields: [courseId], references: [id])
+  type                  EventType
+  title                 String
+  description           String?
+  dueAt                 DateTime?
+  /// Exam/quiz length in minutes, used by the exam-time lock
+  durationMinutes       Int?
+  createdFromMessageId  String?
+  createdFromMessage    RawMessage?  @relation("EventSource", fields: [createdFromMessageId], references: [id])
+  status                EventStatus  @default(active)
+  confidence            Float
+  notifiedAt            DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  revisions   EventRevision[]
+  corrections Correction[]
+  reminders   Reminder[]
+  solverJobs  SolverJob[]
+
+  @@index([batchId, status, dueAt])
+}
+
+model EventRevision {
+  id            String      @id @default(cuid())
+  eventId       String
+  event         Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  field         String
+  oldValue      String?
+  newValue      String?
+  fromMessageId String?
+  fromMessage   RawMessage? @relation(fields: [fromMessageId], references: [id])
+  changedAt     DateTime    @default(now())
+}
+
+model Correction {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id])
+  action    String
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+}
+
+model Reminder {
+  id        String    @id @default(cuid())
+  eventId   String
+  event     Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  fireAt    DateTime
+  channel   String    @default("telegram")
+  sentAt    DateTime?
+  cancelled Boolean   @default(false)
+
+  @@unique([eventId, studentId, fireAt])
+  @@index([fireAt, sentAt, cancelled])
+}
+
+model SolverJob {
+  id         String     @id @default(cuid())
+  eventId    String?
+  event      Event?     @relation(fields: [eventId], references: [id])
+  studentId  String
+  student    Student    @relation(fields: [studentId], references: [id])
+  mode       SolverMode
+  input      String?
+  inputFiles String[]   @default([])
+  output     String?
+  model      String?
+  tokensIn   Int        @default(0)
+  tokensOut  Int        @default(0)
+  blocked    String? // reason when the request was refused (quota, exam lock)
+  createdAt  DateTime   @default(now())
+
+  @@index([studentId, createdAt])
+}
+
+/// Running practice quiz (/quiz). Questions and answers live in `state`.
+model StudySession {
+  id        String   @id @default(cuid())
+  studentId String
+  kind      String
+  state     Json
+  finished  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([studentId, finished])
+}
